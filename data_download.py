@@ -1,3 +1,5 @@
+#%%
+
 import os
 import requests
 import pandas as pd
@@ -55,29 +57,52 @@ def fetch_player_history(player_ids, rate_limit=0.5):
     all_history = []
     all_upcoming = []
 
-    for pid in player_ids:
+    total = len(player_ids)
+    failures = []
+
+    print(f"\n📊 Fetching player match history for {total} players...\n")
+
+    for idx, pid in enumerate(player_ids, 1):
+        print(f"⏳ [{idx}/{total}] Fetching player {pid}...", end=' ', flush=True)
         url = PLAYER_DETAIL_URL.format(pid)
-        response = requests.get(url)
-        if response.status_code != 200:
-            print(f"Failed to fetch player {pid}")
+
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+
+            try:
+                data = response.json()
+            except requests.exceptions.JSONDecodeError:
+                print("❌ JSON decode failed.")
+                failures.append(pid)
+                continue
+
+            history = pd.DataFrame(data.get('history', []))
+            fixtures = pd.DataFrame(data.get('fixtures', []))
+
+            if not history.empty:
+                history['player_id'] = pid
+                all_history.append(history)
+
+            if not fixtures.empty:
+                fixtures['player_id'] = pid
+                all_upcoming.append(fixtures)
+
+            print("✅ Success.")
+
+        except requests.RequestException as e:
+            print(f"❌ Request failed: {e}")
+            failures.append(pid)
             continue
-        data = response.json()
-
-        history = pd.DataFrame(data['history'])
-        fixtures = pd.DataFrame(data['fixtures'])
-
-        if not history.empty:
-            history['player_id'] = pid
-            all_history.append(history)
-
-        if not fixtures.empty:
-            fixtures['player_id'] = pid
-            all_upcoming.append(fixtures)
 
         sleep(rate_limit)
 
     history_df = pd.concat(all_history, ignore_index=True) if all_history else pd.DataFrame()
     upcoming_df = pd.concat(all_upcoming, ignore_index=True) if all_upcoming else pd.DataFrame()
+
+    print(f"\n✅ Done fetching player data.")
+    print(f"🎯 Successful: {total - len(failures)} / {total}")
+    print(f"⚠️ Failed: {len(failures)} players.")
 
     return history_df, upcoming_df
 
@@ -86,27 +111,27 @@ def save_to_parquet(df: pd.DataFrame, name: str, gameweek: int):
     df.to_parquet(filename, index=False)
     print(f"Saved: {filename}")
 
-def main():
-    players, teams, positions, events, gameweek = fetch_base_data()
-    players = enhance_players(players, teams, positions)
-    fixtures = fetch_fixtures()
+#%%
 
-    player_ids = players['id'].tolist()
-    player_history, player_upcoming = fetch_player_history(player_ids)
+players, teams, positions, events, gameweek = fetch_base_data()
+players = enhance_players(players, teams, positions)
+fixtures = fetch_fixtures()
 
-    players_summary = players[[
-        'id', 'first_name', 'second_name', 'team_name', 'team_short', 'position',
-        'now_cost', 'total_points', 'selected_by_percent', 'form', 'minutes'
-    ]]
+player_ids = players['id'].tolist()
+player_history, player_upcoming = fetch_player_history(player_ids)
 
-    # Save all DataFrames
-    save_to_parquet(players_summary, "players", gameweek)
-    save_to_parquet(teams, "teams", gameweek)
-    save_to_parquet(positions, "positions", gameweek)
-    save_to_parquet(events, "events", gameweek)
-    save_to_parquet(fixtures, "fixtures", gameweek)
-    save_to_parquet(player_history, "player_history", gameweek)
-    save_to_parquet(player_upcoming, "player_upcoming_fixtures", gameweek)
+players_summary = players[[
+    'id', 'first_name', 'second_name', 'team_name', 'team_short', 'position',
+    'now_cost', 'total_points', 'selected_by_percent', 'form', 'minutes'
+]]
 
-if __name__ == "__main__":
-    main()
+# Save all DataFrames
+save_to_parquet(players_summary, "players", gameweek)
+save_to_parquet(teams, "teams", gameweek)
+save_to_parquet(positions, "positions", gameweek)
+save_to_parquet(events, "events", gameweek)
+save_to_parquet(fixtures, "fixtures", gameweek)
+save_to_parquet(player_history, "player_history", gameweek)
+save_to_parquet(player_upcoming, "player_upcoming_fixtures", gameweek)
+
+#%%
