@@ -1,3 +1,4 @@
+#%%
 import pandas as pd
 import pulp
 
@@ -60,3 +61,6 @@ prob.solve()
 # Display results
 selected = [pid for pid, var in player_vars.items() if var.value() == 1]
 squad = players[players['id'].isin(selected)]
+
+selected
+#%%

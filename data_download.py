@@ -111,6 +111,30 @@ def save_to_parquet(df: pd.DataFrame, name: str, gameweek: int):
     df.to_parquet(filename, index=False)
     print(f"Saved: {filename}")
 
+# Assuming `events` is your DataFrame and overrides is a column
+def unpack_overrides(events_df):
+    def extract_override(row):
+        override = row.get('overrides')
+        if isinstance(override, list) and len(override) > 0:
+            return override[0]
+        return {}
+
+    # Apply extraction to each row
+    overrides_expanded = events_df['overrides'].apply(extract_override).apply(pd.Series)
+
+    # Rename override keys to prefixed columns
+    overrides_expanded = overrides_expanded.rename(columns={
+        'rules': 'override_rules',
+        'scoring': 'override_scoring',
+        'element_types': 'override_element_types',
+        'pick_multiplier': 'override_pick_multiplier'
+    })
+
+    # Drop original overrides column and join the new columns
+    events_flat = pd.concat([events_df.drop(columns=['overrides']), overrides_expanded], axis=1)
+
+    return events_flat
+
 #%%
 
 players, teams, positions, events, gameweek = fetch_base_data()
@@ -125,11 +149,14 @@ players_summary = players[[
     'now_cost', 'total_points', 'selected_by_percent', 'form', 'minutes'
 ]]
 
+# Apply function
+events_flat = unpack_overrides(events)
+
 # Save all DataFrames
 save_to_parquet(players_summary, "players", gameweek)
 save_to_parquet(teams, "teams", gameweek)
 save_to_parquet(positions, "positions", gameweek)
-save_to_parquet(events, "events", gameweek)
+save_to_parquet(events_flat, "events", gameweek)
 save_to_parquet(fixtures, "fixtures", gameweek)
 save_to_parquet(player_history, "player_history", gameweek)
 save_to_parquet(player_upcoming, "player_upcoming_fixtures", gameweek)
