@@ -1,21 +1,137 @@
+
 #%%
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 #%%
-# Load the data
-historical_df = pd.read_csv('./data_2024/previous_fixtures_38.csv')
-future_fixtures_df = pd.read_csv('./data_2024/future_fixtures_1.csv')
+# Load multiple seasons of data with player name matching
+def load_multi_season_data():
+    """
+    Load and combine data from multiple seasons with proper player matching
+    """
+    seasons_data = []
+    
+    # Load player names/IDs (this helps map players across seasons)
+    try:
+        elements_df = pd.read_csv('./data_2024/elements_1.csv')
+        print(f"Loaded player elements data: {elements_df.shape[0]} players")
+        
+        # Create player name to ID mapping
+        elements_df['full_name'] = elements_df['first_name'].str.strip() + '_' + elements_df['second_name'].str.strip()
+        player_name_map = dict(zip(elements_df['full_name'], elements_df['id']))
+        
+        print(f"Sample player names: {list(elements_df['full_name'].head())}")
+        
+    except FileNotFoundError:
+        print("Player elements file not found - using element IDs directly")
+        elements_df = None
+        player_name_map = {}
+    
+    # Load 2024 data
+    try:
+        hist_2024 = pd.read_csv('./data_2024/previous_fixtures_38.csv')
+        fixtures_2024 = pd.read_csv('./data_2024/future_fixtures_5.csv')
+        hist_2024['season'] = 2024
+        fixtures_2024['season'] = 2024
+        seasons_data.append((hist_2024, fixtures_2024))
+        print(f"Loaded 2024 data: {hist_2024.shape[0]} historical records")
+    except FileNotFoundError:
+        print("2024 data not found")
+    
+    # Load 2023 data (if available)
+    try:
+        hist_2023 = pd.read_csv('./data_2023/previous_fixtures_38.csv')
+        fixtures_2023 = pd.read_csv('./data_2023/fixtures_38.csv')
+        hist_2023['season'] = 2023
+        fixtures_2023['season'] = 2023
+        
+        # Standardize fixtures_2023 to match future_fixtures format
+        if 'difficulty' not in fixtures_2023.columns:
+            fixtures_2023['difficulty'] = (fixtures_2023['team_h_difficulty'] + fixtures_2023['team_a_difficulty']) / 2
+        
+        # If we have 2023 elements data, map old IDs to new IDs using names
+        if elements_df is not None:
+            try:
+                elements_2023 = pd.read_csv('./data_2023/elements_1.csv')
+                elements_2023['full_name'] = elements_2023['first_name'].str.strip() + '_' + elements_2023['second_name'].str.strip()
+                
+                # Create mapping from 2023 ID to 2024 ID via names
+                id_mapping_2023_to_2024 = {}
+                for _, row in elements_2023.iterrows():
+                    name = row['full_name']
+                    old_id = row['id']
+                    if name in player_name_map:
+                        new_id = player_name_map[name]
+                        id_mapping_2023_to_2024[old_id] = new_id
+                
+                # Update 2023 historical data with consistent IDs
+                hist_2023['element'] = hist_2023['element'].map(id_mapping_2023_to_2024).fillna(hist_2023['element'])
+                print(f"Mapped {len(id_mapping_2023_to_2024)} players from 2023 to 2024 IDs")
+                
+            except FileNotFoundError:
+                print("2023 elements file not found - keeping original 2023 IDs")
+        
+        seasons_data.append((hist_2023, fixtures_2023))
+        print(f"Loaded 2023 data: {hist_2023.shape[0]} historical records")
+    except FileNotFoundError:
+        print("2023 data not found - using 2024 data only")
+    
+    return seasons_data, elements_df
 
-print(f"Historical data shape: {historical_df.shape}")
-print(f"Future fixtures shape: {future_fixtures_df.shape}")
-print(f"Target variable (total_points) stats:")
+# Load data from multiple seasons with player matching
+seasons_data, elements_df = load_multi_season_data()
+
+# If only one season available, use single season approach
+if len(seasons_data) == 1:
+    historical_df = seasons_data[0][0]
+    future_fixtures_df = seasons_data[0][1]
+else:
+    # Combine multiple seasons
+    historical_dfs = [data[0] for data in seasons_data]
+    fixture_dfs = [data[1] for data in seasons_data]
+    
+    historical_df = pd.concat(historical_dfs, ignore_index=True)
+    future_fixtures_df = pd.concat(fixture_dfs, ignore_index=True)
+
+print(f"\nCombined historical data shape: {historical_df.shape}")
+print(f"Combined fixtures data shape: {future_fixtures_df.shape}")
+
+# Show player mapping stats if available
+if elements_df is not None:
+    print(f"Player elements loaded: {len(elements_df)} players")
+    print(f"Sample players: {elements_df[['full_name', 'id', 'team']].head()}")
+
+print(f"\nTarget variable (total_points) stats:")
 print(historical_df['total_points'].describe())
 
 #%%
+def create_player_mapping(historical_df):
+    """
+    Create player mapping based on names (if available) or use element IDs
+    Note: This is a simplified approach - you may need actual player name data
+    """
+    # For now, we'll use element IDs but add season info
+    # In practice, you'd want to match on firstname + surname
+    player_mapping = {}
+    
+    for _, row in historical_df.iterrows():
+        season = row.get('season', 2024)
+        element_id = row['element']
+        
+        # Create a unique key (you'd replace this with firstname_surname)
+        player_key = f"player_{element_id}_season_{season}"
+        
+        if player_key not in player_mapping:
+            player_mapping[player_key] = {
+                'element_id': element_id,
+                'season': season,
+                # Add firstname, surname here when available
+            }
+    
+    return player_mapping
 
 def create_future_target(df, target_gameweeks=1):
     """
@@ -28,54 +144,53 @@ def create_future_target(df, target_gameweeks=1):
     Returns:
         DataFrame with future targets
     """
-    df_sorted = df.sort_values(['element', 'round'])
+    df_sorted = df.sort_values(['season', 'element', 'round'])
     
     targets = []
-    for element_id in df_sorted['element'].unique():
-        element_data = df_sorted[df_sorted['element'] == element_id].copy()
-        element_data = element_data.sort_values('round')
+    for season in df_sorted['season'].unique():
+        season_data = df_sorted[df_sorted['season'] == season]
         
-        # Create future targets
-        for i in range(len(element_data)):
-            future_points = []
-            current_round = element_data.iloc[i]['round']
+        for element_id in season_data['element'].unique():
+            element_data = season_data[season_data['element'] == element_id].copy()
+            element_data = element_data.sort_values('round')
             
-            # Get points from next target_gameweeks
-            for j in range(1, target_gameweeks + 1):
-                future_round = current_round + j
-                future_match = element_data[element_data['round'] == future_round]
+            # Create future targets within the same season
+            for i in range(len(element_data)):
+                future_points = []
+                current_round = element_data.iloc[i]['round']
                 
-                if len(future_match) > 0:
-                    future_points.append(future_match.iloc[0]['total_points'])
-            
-            # Calculate target (average if multiple gameweeks)
-            if future_points:
-                if target_gameweeks == 1:
-                    target = future_points[0]
-                else:
-                    target = np.mean(future_points)
+                # Get points from next target_gameweeks within same season
+                for j in range(1, target_gameweeks + 1):
+                    future_round = current_round + j
+                    future_match = element_data[element_data['round'] == future_round]
+                    
+                    if len(future_match) > 0:
+                        future_points.append(future_match.iloc[0]['total_points'])
                 
-                targets.append({
-                    'element': element_id,
-                    'round': current_round,
-                    'future_points': target,
-                    'future_gameweeks_available': len(future_points)
-                })
+                # Calculate target (average if multiple gameweeks)
+                if future_points:
+                    if target_gameweeks == 1:
+                        target = future_points[0]
+                    else:
+                        target = np.mean(future_points)
+                    
+                    targets.append({
+                        'element': element_id,
+                        'round': current_round,
+                        'season': season,
+                        'future_points': target,
+                        'future_gameweeks_available': len(future_points)
+                    })
     
     return pd.DataFrame(targets)
 
 #%%
-def get_fixture_difficulty(element_id, round_num, fixtures_df, historical_df, target_gameweeks=1):
+def get_fixture_difficulty(element_id, round_num, season, fixtures_df, historical_df, target_gameweeks=1):
     """
-    Get fixture difficulty for upcoming matches
+    Get fixture difficulty for upcoming matches (season-aware)
     """
-    # Get team for this element from historical data
-    element_team_matches = historical_df[historical_df['element'] == element_id]
-    if len(element_team_matches) == 0:
-        return 3, 0  # Default difficulty and home status
-    
-    # Find team ID (this is approximate - you might need to map this properly)
-    # For now, we'll use opponent_team info to infer
+    # Filter fixtures for the specific season
+    season_fixtures = fixtures_df[fixtures_df['season'] == season]
     
     # Get fixtures for the target gameweeks
     future_rounds = list(range(round_num + 1, round_num + target_gameweeks + 1))
@@ -84,15 +199,28 @@ def get_fixture_difficulty(element_id, round_num, fixtures_df, historical_df, ta
     home_matches = 0
     
     for future_round in future_rounds:
-        # This is a simplified approach - you'd need proper team mapping
-        # For demonstration, we'll use average difficulty
-        round_fixtures = fixtures_df[fixtures_df['event'] == future_round]
+        # Get fixtures for this round
+        if 'event' in season_fixtures.columns:
+            round_fixtures = season_fixtures[season_fixtures['event'] == future_round]
+        else:
+            # Handle different fixture file formats
+            continue
+            
         if len(round_fixtures) > 0:
-            avg_difficulty = round_fixtures['difficulty'].mean()
+            if 'difficulty' in round_fixtures.columns:
+                avg_difficulty = round_fixtures['difficulty'].mean()
+            else:
+                # Calculate from team difficulties if available
+                h_diff = round_fixtures.get('team_h_difficulty', 3).mean()
+                a_diff = round_fixtures.get('team_a_difficulty', 3).mean()
+                avg_difficulty = (h_diff + a_diff) / 2
+                
             difficulties.append(avg_difficulty)
-            # Count home matches (simplified)
-            home_count = round_fixtures['is_home'].sum()
-            home_matches += home_count / len(round_fixtures)
+            
+            # Count home matches
+            if 'is_home' in round_fixtures.columns:
+                home_count = round_fixtures['is_home'].sum()
+                home_matches += home_count / len(round_fixtures)
     
     avg_difficulty = np.mean(difficulties) if difficulties else 3
     home_ratio = home_matches / target_gameweeks if target_gameweeks > 0 else 0
@@ -111,7 +239,7 @@ def create_enhanced_features(historical_df, future_fixtures_df, target_gameweeks
     # Merge with historical data
     enhanced_df = historical_df.merge(
         future_targets, 
-        on=['element', 'round'], 
+        on=['element', 'round', 'season'], 
         how='inner'
     )
     
@@ -128,8 +256,8 @@ def create_enhanced_features(historical_df, future_fixtures_df, target_gameweeks
     enhanced_df['was_home'] = enhanced_df['was_home'].astype(int)
     enhanced_df['modified'] = enhanced_df['modified'].astype(int)
     
-    # Create rolling averages (last 3 games performance)
-    enhanced_df = enhanced_df.sort_values(['element', 'round'])
+    # Create rolling averages (last 3 games performance within season)
+    enhanced_df = enhanced_df.sort_values(['season', 'element', 'round'])
     
     rolling_features = ['total_points', 'minutes', 'goals_scored', 'assists', 
                        'expected_goals', 'expected_assists', 'ict_index', 'bps']
@@ -137,10 +265,10 @@ def create_enhanced_features(historical_df, future_fixtures_df, target_gameweeks
     for feature in rolling_features:
         if feature in enhanced_df.columns:
             enhanced_df[f'{feature}_last3'] = (
-                enhanced_df.groupby('element')[feature]
+                enhanced_df.groupby(['season', 'element'])[feature]
                 .rolling(window=3, min_periods=1)
                 .mean()
-                .reset_index(level=0, drop=True)
+                .reset_index(level=[0,1], drop=True)
             )
     
     # Add fixture difficulty for upcoming matches
@@ -150,7 +278,7 @@ def create_enhanced_features(historical_df, future_fixtures_df, target_gameweeks
     
     for idx, row in enhanced_df.iterrows():
         difficulty, home_ratio = get_fixture_difficulty(
-            row['element'], row['round'], future_fixtures_df, historical_df, target_gameweeks
+            row['element'], row['round'], row['season'], future_fixtures_df, historical_df, target_gameweeks
         )
         enhanced_df.at[idx, 'next_fixture_difficulty'] = difficulty
         enhanced_df.at[idx, 'next_home_ratio'] = home_ratio
@@ -160,9 +288,9 @@ def create_enhanced_features(historical_df, future_fixtures_df, target_gameweeks
     enhanced_df['goals_form'] = enhanced_df['goals_scored_last3']
     enhanced_df['assists_form'] = enhanced_df['assists_last3']
     
-    # Team strength indicators (simplified)
-    enhanced_df['team_goals_scored'] = enhanced_df.groupby(['round', 'opponent_team'])['goals_scored'].transform('sum')
-    enhanced_df['team_goals_conceded'] = enhanced_df.groupby(['round', 'opponent_team'])['goals_conceded'].transform('sum')
+    # Team strength indicators (season-aware)
+    enhanced_df['team_goals_scored'] = enhanced_df.groupby(['season', 'round', 'opponent_team'])['goals_scored'].transform('sum')
+    enhanced_df['team_goals_conceded'] = enhanced_df.groupby(['season', 'round', 'opponent_team'])['goals_conceded'].transform('sum')
     
     return enhanced_df
 
@@ -174,7 +302,7 @@ enhanced_data = create_enhanced_features(historical_df, future_fixtures_df, TARG
 # Select features for training
 feature_columns = [
     # Basic info
-    'element', 'opponent_team', 'was_home', 'round',
+    'element', 'opponent_team', 'was_home', 'round', 'season',
     
     # Current game stats
     'minutes', 'goals_scored', 'assists', 'clean_sheets', 'goals_conceded',
@@ -209,7 +337,7 @@ available_features = [col for col in feature_columns if col in enhanced_data.col
 print(f"\nUsing {len(available_features)} features")
 
 # Prepare training data
-X = enhanced_data[available_features].fillna(0)
+X = enhanced_data[available_features] #.fillna(0)
 y = enhanced_data['future_points']
 
 # Remove rows with missing targets
@@ -222,43 +350,150 @@ print(f"Target variable stats (next {TARGET_GAMEWEEKS} gameweek(s)):")
 print(y.describe())
 
 #%%
-# Split data temporally (use earlier rounds for training, later for testing)
-split_round = enhanced_data['round'].quantile(0.8)
-train_mask = enhanced_data['round'] <= split_round
-test_mask = enhanced_data['round'] > split_round
+# Split data into train/validation/test sets
+if 'season' in enhanced_data.columns and len(enhanced_data['season'].unique()) > 1:
+    print("Using season-based split")
+    # Train: 2023, Validation: Early 2024, Test: Late 2024
+    train_mask = enhanced_data['season'] == 2023
+    
+    # Split 2024 data into validation and test
+    data_2024 = enhanced_data[enhanced_data['season'] == 2024]
+    split_round_2024 = data_2024['round'].quantile(0.5)  # Split 2024 in half
+    
+    val_mask = (enhanced_data['season'] == 2024) & (enhanced_data['round'] <= split_round_2024)
+    test_mask = (enhanced_data['season'] == 2024) & (enhanced_data['round'] > split_round_2024)
+    
+    print(f"Train: 2023 season")
+    print(f"Validation: 2024 rounds 1-{int(split_round_2024)}")
+    print(f"Test: 2024 rounds {int(split_round_2024)+1}+")
+    
+else:
+    # Fallback: temporal split within single season (60/20/20)
+    print("Using temporal split within season")
+    split_1 = enhanced_data['round'].quantile(0.6)
+    split_2 = enhanced_data['round'].quantile(0.8)
+    
+    train_mask = enhanced_data['round'] <= split_1
+    val_mask = (enhanced_data['round'] > split_1) & (enhanced_data['round'] <= split_2)
+    test_mask = enhanced_data['round'] > split_2
 
 train_mask = train_mask[valid_mask]
+val_mask = val_mask[valid_mask]
 test_mask = test_mask[valid_mask]
 
-X_train, X_test = X[train_mask], X[test_mask]
-y_train, y_test = y[train_mask], y[test_mask]
+X_train, X_val, X_test = X[train_mask], X[val_mask], X[test_mask]
+y_train, y_val, y_test = y[train_mask], y[val_mask], y[test_mask]
 
-print(f"\nTemporal split:")
+print(f"\nData splits:")
 print(f"Training: {len(X_train)} samples")
+print(f"Validation: {len(X_val)} samples") 
 print(f"Testing: {len(X_test)} samples")
 
 #%%
+#%%
+# Hyperparameter tuning with validation set
+def tune_xgboost_hyperparameters(X_train, y_train, X_val, y_val, n_iter=50):
+    """
+    Tune XGBoost hyperparameters using validation set
+    
+    Args:
+        X_train: Training features
+        y_train: Training targets
+        X_val: Validation features
+        y_val: Validation targets
+        n_iter: Number of parameter combinations to try
+    
+    Returns:
+        Best model and parameters
+    """
+    # Define parameter search space
+    param_distributions = {
+        'max_depth': [3, 4, 5, 6, 7, 8, 9],
+        'learning_rate': [0.01, 0.05, 0.1, 0.15, 0.2],
+        'n_estimators': [100, 200, 300, 500],
+        'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+        'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+        'reg_alpha': [0, 0.1, 0.5, 1.0],
+        'reg_lambda': [0.1, 0.5, 1.0, 2.0],
+        'min_child_weight': [1, 3, 5, 7]
+    }
+    
+    best_rmse = float('inf')
+    best_params = None
+    best_model = None
+    
+    print(f"Starting hyperparameter tuning with {n_iter} iterations...")
+    
+    # Random search
+    np.random.seed(42)
+    for i in range(n_iter):
+        # Sample random parameters
+        params = {
+            'objective': 'reg:squarederror',
+            'random_state': 42,
+            'n_jobs': -1
+        }
+        
+        for param, values in param_distributions.items():
+            params[param] = np.random.choice(values)
+        
+        # Train model with current parameters
+        model = xgb.XGBRegressor(**params)
+        model.fit(X_train, y_train)
+        
+        # Evaluate on validation set
+        y_val_pred = model.predict(X_val)
+        val_rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
+        
+        # Track best model
+        if val_rmse < best_rmse:
+            best_rmse = val_rmse
+            best_params = params.copy()
+            best_model = model
+        
+        if (i + 1) % 10 == 0:
+            print(f"Iteration {i + 1}/{n_iter}, Best validation RMSE: {best_rmse:.4f}")
+    
+    print(f"\nBest parameters found:")
+    for param, value in best_params.items():
+        if param not in ['objective', 'random_state', 'n_jobs']:
+            print(f"  {param}: {value}")
+    
+    print(f"Best validation RMSE: {best_rmse:.4f}")
+    
+    return best_model, best_params
+
 # Train XGBoost model
 print(f"\nTraining XGBoost model to predict next {TARGET_GAMEWEEKS} gameweek(s)...")
 
-xgb_params = {
-    'objective': 'reg:squarederror',
-    'max_depth': 8,
-    'learning_rate': 0.05,
-    'n_estimators': 300,
-    'subsample': 0.8,
-    'colsample_bytree': 0.8,
-    'reg_alpha': 0.1,
-    'reg_lambda': 1.0,
-    'random_state': 42,
-    'n_jobs': -1
-}
+# Option 1: Use hyperparameter tuning (recommended but slower)
+USE_HYPERPARAMETER_TUNING = True  # Set to False for faster training
 
-model = xgb.XGBRegressor(**xgb_params)
-model.fit(X_train, y_train)
+if USE_HYPERPARAMETER_TUNING:
+    print("Using hyperparameter tuning with validation set...")
+    model, best_params = tune_xgboost_hyperparameters(X_train, y_train, X_val, y_val, n_iter=30)
+else:
+    # Option 2: Use default parameters (faster)
+    print("Using default parameters...")
+    xgb_params = {
+        'objective': 'reg:squarederror',
+        'max_depth': 8,
+        'learning_rate': 0.05,
+        'n_estimators': 300,
+        'subsample': 0.8,
+        'colsample_bytree': 0.8,
+        'reg_alpha': 0.1,
+        'reg_lambda': 1.0,
+        'random_state': 42,
+        'n_jobs': -1
+    }
+    
+    model = xgb.XGBRegressor(**xgb_params)
+    model.fit(X_train, y_train)
 
-# Make predictions
+# Make predictions on all sets
 y_train_pred = model.predict(X_train)
+y_val_pred = model.predict(X_val)
 y_test_pred = model.predict(X_test)
 
 # Calculate metrics
@@ -275,6 +510,7 @@ def evaluate_model(y_true, y_pred, dataset_name):
     return rmse, mae, r2
 
 train_rmse, train_mae, train_r2 = evaluate_model(y_train, y_train_pred, "Training")
+val_rmse, val_mae, val_r2 = evaluate_model(y_val, y_val_pred, "Validation")
 test_rmse, test_mae, test_r2 = evaluate_model(y_test, y_test_pred, "Test")
 
 #%%
@@ -289,7 +525,7 @@ print(importance_df.head(15))
 
 #%%
 # Prediction function for future gameweeks
-def predict_future_points(model, player_data, upcoming_fixtures, element_id, target_round, target_gameweeks=1):
+def predict_future_points(model, player_data, upcoming_fixtures, element_id, target_round, target_gameweeks=1, elements_df=None):
     """
     Predict points for a player in future gameweeks
     
@@ -300,6 +536,7 @@ def predict_future_points(model, player_data, upcoming_fixtures, element_id, tar
         element_id: Player ID
         target_round: Round to predict for
         target_gameweeks: Number of gameweeks to predict
+        elements_df: Player elements data for additional features
     
     Returns:
         Predicted points
@@ -314,24 +551,44 @@ def predict_future_points(model, player_data, upcoming_fixtures, element_id, tar
     numeric_columns = player_recent.select_dtypes(include=[np.number]).columns
     recent_stats = player_recent[numeric_columns].mean()
     
+    # Get player info from elements if available
+    player_info = {}
+    if elements_df is not None:
+        player_row = elements_df[elements_df['id'] == element_id]
+        if len(player_row) > 0:
+            player_info = {
+                'position': player_row.iloc[0].get('element_type', 2),
+                'team': player_row.iloc[0].get('team', 10),
+                'form': player_row.iloc[0].get('form', 0),
+                'now_cost': player_row.iloc[0].get('now_cost', 50),
+                'selected_by_percent': player_row.iloc[0].get('selected_by_percent', 5.0)
+            }
+    
     # Get fixture difficulty for upcoming matches
+    current_season = player_recent['season'].iloc[-1] if 'season' in player_recent.columns else 2024
     upcoming_difficulty = upcoming_fixtures[
         (upcoming_fixtures['event'] >= target_round) & 
-        (upcoming_fixtures['event'] < target_round + target_gameweeks)
+        (upcoming_fixtures['event'] < target_round + target_gameweeks) &
+        (upcoming_fixtures['season'] == current_season)
     ]['difficulty'].mean()
     
-    home_ratio = upcoming_fixtures[
+    home_fixtures = upcoming_fixtures[
         (upcoming_fixtures['event'] >= target_round) & 
         (upcoming_fixtures['event'] < target_round + target_gameweeks) &
-        (upcoming_fixtures['is_home'] == True)
-    ].shape[0] / target_gameweeks
+        (upcoming_fixtures['season'] == current_season)
+    ]
     
-    # Create prediction input
+    home_ratio = 0
+    if len(home_fixtures) > 0 and 'is_home' in home_fixtures.columns:
+        home_ratio = home_fixtures['is_home'].sum() / len(home_fixtures)
+    
+    # Create prediction input with enhanced features
     prediction_input = pd.DataFrame([{
         'element': element_id,
         'opponent_team': recent_stats.get('opponent_team', 10),
         'was_home': 1 if home_ratio > 0.5 else 0,
         'round': target_round,
+        'season': current_season,
         'minutes': recent_stats.get('minutes', 70),
         'goals_scored': recent_stats.get('goals_scored', 0),
         'assists': recent_stats.get('assists', 0),
@@ -389,7 +646,7 @@ def predict_future_points(model, player_data, upcoming_fixtures, element_id, tar
     
     # Make prediction
     predicted_points = model.predict(prediction_input)[0]
-    return predicted_points
+    return predicted_points, player_info
 
 #%%
 # Example predictions
@@ -401,11 +658,20 @@ print("="*60)
 example_elements = enhanced_data['element'].unique()[:5]
 
 for element_id in example_elements:
-    predicted = predict_future_points(
+    predicted, player_info = predict_future_points(
         model, historical_df, future_fixtures_df, 
-        element_id, target_round=20, target_gameweeks=TARGET_GAMEWEEKS
+        element_id, target_round=20, target_gameweeks=TARGET_GAMEWEEKS,
+        elements_df=elements_df
     )
-    print(f"Element {element_id}: Predicted points = {predicted:.2f}")
+    
+    # Get player name if available
+    player_name = "Unknown"
+    if elements_df is not None:
+        player_row = elements_df[elements_df['id'] == element_id]
+        if len(player_row) > 0:
+            player_name = f"{player_row.iloc[0]['first_name']} {player_row.iloc[0]['second_name']}"
+    
+    print(f"Element {element_id} ({player_name}): Predicted points = {predicted:.2f}")
 
 #%%
 # Model summary
@@ -416,7 +682,11 @@ print(f"Model: XGBoost Regressor (Future Points Prediction)")
 print(f"Target: Next {TARGET_GAMEWEEKS} gameweek(s) average points")
 print(f"Features: {len(available_features)}")
 print(f"Training samples: {len(X_train):,}")
+print(f"Validation samples: {len(X_val):,}")
 print(f"Test samples: {len(X_test):,}")
+print(f"Validation RMSE: {val_rmse:.4f}")
+print(f"Validation MAE: {val_mae:.4f}")
+print(f"Validation R²: {val_r2:.4f}")
 print(f"Test RMSE: {test_rmse:.4f}")
 print(f"Test MAE: {test_mae:.4f}")
 print(f"Test R²: {test_r2:.4f}")
