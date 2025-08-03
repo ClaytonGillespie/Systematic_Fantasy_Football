@@ -11,7 +11,7 @@ FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
 PLAYER_DETAIL_URL = "https://fantasy.premierleague.com/api/element-summary/{}/"
 
 # Output folder
-DATA_DIR = "./data/"
+DATA_DIR = "./data_2025/"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def fetch_base_data():
@@ -106,9 +106,9 @@ def fetch_player_history(player_ids, rate_limit=0.5):
 
     return history_df, upcoming_df
 
-def save_to_parquet(df: pd.DataFrame, name: str, gameweek: int):
-    filename = f"{DATA_DIR}{name}_gw{gameweek}.parquet"
-    df.to_parquet(filename, index=False)
+def save_to_csv(df: pd.DataFrame, name: str, gameweek: int):
+    filename = f"{DATA_DIR}{name}_gw{gameweek}.csv"
+    df.to_csv(filename, index=False)
     print(f"Saved: {filename}")
 
 def unpack_and_flatten_overrides(events_df):
@@ -159,12 +159,12 @@ players_summary = players[[
 events_flat = unpack_and_flatten_overrides(events)
 
 # Save all DataFrames
-save_to_parquet(players_summary, "players", gameweek)
-save_to_parquet(teams, "teams", gameweek)
-save_to_parquet(positions, "positions", gameweek)
-save_to_parquet(events_flat, "events", gameweek)
-save_to_parquet(fixtures, "fixtures", gameweek)
-save_to_parquet(player_history, "player_history", gameweek)
-save_to_parquet(player_upcoming, "player_upcoming_fixtures", gameweek)
+save_to_csv(players_summary, "players", gameweek)
+save_to_csv(teams, "teams", gameweek)
+save_to_csv(positions, "positions", gameweek)
+save_to_csv(events_flat, "events", gameweek)
+save_to_csv(fixtures, "fixtures", gameweek)
+save_to_csv(player_history, "player_history", gameweek)
+save_to_csv(player_upcoming, "player_upcoming_fixtures", gameweek)
 
 #%%
