@@ -25,8 +25,8 @@ This project combines historical FPL data analysis, XGBoost machine learning mod
 - `fpl_optimizer.py` - Basic FPL optimization logic
 - `fpl_optimizer_single_period.py` - Single gameweek optimization
 - `fpl_optimizer_multi_period.py` - Multi-gameweek optimization with transfers
-- `ffs_scraper.py` - Fantasy Football Scout recommendations scraper
-- `data_download.py` - FPL API data collection script
+- `ffs_scraper.py` - Fantasy Football Scout recommendations scraper (standalone)
+- `data_download.py` - Combined FPL API data collection and FFS scraping script
 - `data_2023/`, `data_2024/`, `data_2025/` - Historical and current season data
 
 ## Installation
@@ -63,15 +63,16 @@ python fpl_optimizer_single_period.py
 python fpl_optimizer_multi_period.py
 ```
 
-### Scrape Expert Recommendations
+### Scrape Expert Recommendations (Optional - included in data_download.py)
 ```bash
 python ffs_scraper.py
 ```
 
-### Download Latest Data
+### Download Latest Data and Expert Recommendations
 ```bash
 python data_download.py
 ```
+This command downloads both FPL API data and Fantasy Football Scout recommendations in a single run.
 
 ## Data Sources
 
