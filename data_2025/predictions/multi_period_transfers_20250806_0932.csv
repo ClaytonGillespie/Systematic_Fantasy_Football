@@ -1,0 +1,23 @@
+gameweek,action_type,player_name,team,position,cost,points,is_starting,is_captain,transfer_details
+1,initial_squad,Cole Palmer,CHE,MID,10.5,7.344569709028526,True,True,Initial 15-man squad
+1,initial_squad,Bryan Mbeumo,MUN,MID,8.0,7.3261558200188155,True,False,Initial 15-man squad
+1,initial_squad,Alexander Isak,NEW,FWD,10.5,7.257999199080861,True,False,Initial 15-man squad
+1,initial_squad,Chris Wood,NFO,FWD,7.5,6.063631526391668,True,False,Initial 15-man squad
+1,initial_squad,Jarrod Bowen,WHU,FWD,8.0,5.959284256857074,True,False,Initial 15-man squad
+1,initial_squad,Bruno Borges Fernandes,MUN,MID,9.0,5.586233955750897,True,False,Initial 15-man squad
+1,initial_squad,Antoine Semenyo,BOU,MID,7.0,4.8923847111647305,True,False,Initial 15-man squad
+1,initial_squad,Jordan Pickford,EVE,GKP,5.5,4.415937561799851,True,False,Initial 15-man squad
+1,initial_squad,Joško Gvardiol,MCI,DEF,6.0,4.3643361501391675,True,False,Initial 15-man squad
+1,initial_squad,Virgil van Dijk,LIV,DEF,6.0,4.081431946152489,True,False,Initial 15-man squad
+1,initial_squad,Nikola Milenković,NFO,DEF,5.5,3.9820338321468816,True,False,Initial 15-man squad
+1,initial_squad,Jenson Seelt,SUN,DEF,4.0,1.5587712219644705,False,False,Initial 15-man squad
+1,initial_squad,Sebastiaan Bornauw,LEE,DEF,4.0,1.5181109014451963,False,False,Initial 15-man squad
+1,initial_squad,Marcus Bettinelli,MCI,GKP,4.0,0.011560433383083293,False,False,Initial 15-man squad
+1,initial_squad,Jayce Fitzgerald,MUN,MID,4.5,0.0071685501884498565,False,False,Initial 15-man squad
+2,transfer_out,Antoine Semenyo,BOU,MID,7.0,4.8923847111647305,False,False,Transferred out in GW2
+2,transfer_in,Mohamed Salah,LIV,MID,14.5,6.708219564481578,True,True,Transferred in for GW2
+2,captain_change,Mohamed Salah,LIV,MID,14.5,6.708219564481578,True,True,Made captain in GW2 (replacing Cole Palmer)
+3,transfer_out,Jarrod Bowen,WHU,FWD,8.0,5.431039675044812,False,False,Transferred out in GW3
+3,transfer_in,Erling Haaland,MCI,FWD,14.0,7.157701749882539,True,False,Transferred in for GW3
+4,transfer_out,Jayce Fitzgerald,MUN,MID,4.5,0.007319633522412941,False,False,Transferred out in GW4
+4,transfer_in,Matheus Santos Carneiro da Cunha,MUN,MID,8.0,6.292009404175157,False,False,Transferred in for GW4

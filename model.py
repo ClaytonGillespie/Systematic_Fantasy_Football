@@ -357,7 +357,214 @@ print(f"Validation: {len(X_val)} samples")
 print(f"Testing: {len(X_test)} samples")
 
 #%%
-# Hyperparameter tuning with validation set
+# Import and use the distribution analysis function
+from distribution_check import analyze_points_distribution
+
+# Analyze target distribution first
+print("\nAnalyzing target distribution to choose optimal objective...")
+
+# Create a temporary DataFrame for the analysis
+temp_df = pd.DataFrame({'future_points': y})
+distribution_analysis = analyze_points_distribution(temp_df, 'future_points')
+
+# Extract recommendation (the function returns a dict, so we need to add this)
+skewness = distribution_analysis['skewness']
+zero_percent = (y == 0).mean() * 100
+
+if zero_percent > 15:
+    recommended_objective = 'tweedie'
+elif skewness > 2.0:
+    recommended_objective = 'gamma'
+elif skewness > 1.0:
+    recommended_objective = 'tweedie'
+else:
+    recommended_objective = 'standard'
+
+print(f"Recommended objective: {recommended_objective}")
+
+#%%
+# Get objective-specific parameters
+def get_objective_params(objective_type, base_params=None):
+    """
+    Get XGBoost parameters optimized for different objectives
+    """
+    if base_params is None:
+        base_params = {
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'n_estimators': 300,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'reg_alpha': 0.1,
+            'reg_lambda': 1.0,
+            'random_state': 42,
+            'n_jobs': -1
+        }
+    
+    params = base_params.copy()
+    
+    if objective_type == "tweedie":
+        params.update({
+            'objective': 'reg:tweedie',
+            'tweedie_variance_power': 1.5,  # Between Poisson (1) and Gamma (2)
+            'learning_rate': 0.05,  # Slightly lower for Tweedie
+        })
+    elif objective_type == "gamma":
+        params.update({
+            'objective': 'reg:gamma',
+            'learning_rate': 0.05,  # Slightly lower for Gamma
+        })
+    else:  # standard
+        params.update({
+            'objective': 'reg:squarederror',
+        })
+    
+    return params, objective_type
+
+#%%
+# Enhanced hyperparameter tuning with multiple objectives
+def tune_xgboost_with_objectives(X_train, y_train, X_val, y_val, objectives_to_try=['auto'], n_iter=30):
+    """
+    Tune XGBoost hyperparameters across different objectives
+    """
+    if 'auto' in objectives_to_try:
+        # Use distribution analysis recommendation
+        temp_train_df = pd.DataFrame({'future_points': y_train})
+        dist_analysis = analyze_points_distribution(temp_train_df, 'future_points')
+        
+        # Extract recommendation
+        skewness = dist_analysis['skewness']
+        zero_percent = (y_train == 0).mean() * 100
+        
+        if zero_percent > 15:
+            auto_objective = 'tweedie'
+        elif skewness > 2.0:
+            auto_objective = 'gamma'
+        elif skewness > 1.0:
+            auto_objective = 'tweedie'
+        else:
+            auto_objective = 'standard'
+            
+        objectives_to_try = [auto_objective, 'standard', 'tweedie']  # Try recommended + alternatives
+    
+    best_overall_rmse = float('inf')
+    best_overall_model = None
+    best_overall_params = None
+    best_objective = None
+    
+    results_by_objective = {}
+    
+    print(f"\n🔬 TESTING MULTIPLE OBJECTIVES: {objectives_to_try}")
+    print("=" * 60)
+    
+    for obj_type in objectives_to_try:
+        print(f"\n🎯 Testing {obj_type.upper()} objective...")
+        
+        # Get base parameters for this objective
+        base_params, _ = get_objective_params(obj_type)
+        
+        # Parameter search space (objective-specific)
+        if obj_type == 'tweedie':
+            param_distributions = {
+                'max_depth': [4, 5, 6, 7, 8],
+                'learning_rate': [0.03, 0.05, 0.07, 0.1],
+                'n_estimators': [200, 300, 400],
+                'subsample': [0.7, 0.8, 0.9],
+                'colsample_bytree': [0.7, 0.8, 0.9],
+                'reg_alpha': [0.1, 0.5, 1.0],
+                'reg_lambda': [0.5, 1.0, 2.0],
+                'tweedie_variance_power': [1.2, 1.5, 1.8]
+            }
+        else:
+            param_distributions = {
+                'max_depth': [4, 5, 6, 7, 8],
+                'learning_rate': [0.05, 0.1, 0.15],
+                'n_estimators': [200, 300, 400],
+                'subsample': [0.7, 0.8, 0.9],
+                'colsample_bytree': [0.7, 0.8, 0.9],
+                'reg_alpha': [0, 0.1, 0.5],
+                'reg_lambda': [0.5, 1.0, 2.0]
+            }
+        
+        best_rmse = float('inf')
+        best_params = None
+        best_model = None
+        
+        # Random search for this objective
+        np.random.seed(42)
+        for i in range(n_iter):
+            # Sample random parameters
+            params = base_params.copy()
+            
+            for param, values in param_distributions.items():
+                params[param] = np.random.choice(values)
+            
+            try:
+                # Handle gamma objective requirement (no zeros/negatives)
+                y_train_adjusted = y_train.copy()
+                y_val_adjusted = y_val.copy()
+                
+                if obj_type == 'gamma':
+                    # Add small constant to handle zeros for gamma
+                    y_train_adjusted = np.maximum(y_train_adjusted, 0.1)
+                    y_val_adjusted = np.maximum(y_val_adjusted, 0.1)
+                
+                # Train model
+                model = xgb.XGBRegressor(**params)
+                model.fit(X_train, y_train_adjusted)
+                
+                # Predict and adjust back if needed
+                y_val_pred = model.predict(X_val)
+                
+                if obj_type == 'gamma':
+                    # No adjustment needed for gamma predictions
+                    pass
+                
+                # Calculate validation RMSE on original scale
+                val_rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
+                
+                # Track best for this objective
+                if val_rmse < best_rmse:
+                    best_rmse = val_rmse
+                    best_params = params.copy()
+                    best_model = model
+                
+            except Exception as e:
+                continue
+            
+            if (i + 1) % 10 == 0:
+                print(f"   Iteration {i + 1}/{n_iter}, Best RMSE: {best_rmse:.4f}")
+        
+        # Store results for this objective
+        if best_model is not None:
+            results_by_objective[obj_type] = {
+                'model': best_model,
+                'params': best_params,
+                'rmse': best_rmse
+            }
+            
+            print(f"   ✅ Best {obj_type} RMSE: {best_rmse:.4f}")
+            
+            # Track overall best
+            if best_rmse < best_overall_rmse:
+                best_overall_rmse = best_rmse
+                best_overall_model = best_model
+                best_overall_params = best_params
+                best_objective = obj_type
+        else:
+            print(f"   ❌ No valid model found for {obj_type}")
+    
+    # Summary
+    print(f"\n🏆 OBJECTIVE COMPARISON:")
+    print("-" * 40)
+    for obj_type, result in results_by_objective.items():
+        indicator = "🏆" if obj_type == best_objective else "  "
+        print(f"{indicator} {obj_type:10}: RMSE {result['rmse']:.4f}")
+    
+    print(f"\n🎯 Best objective: {best_objective.upper()}")
+    print(f"📈 Best validation RMSE: {best_overall_rmse:.4f}")
+    
+    return best_overall_model, best_overall_params, best_objective, results_by_objective
 def tune_xgboost_hyperparameters(X_train, y_train, X_val, y_val, n_iter=50):
     """
     Tune XGBoost hyperparameters using validation set
@@ -426,26 +633,28 @@ print(f"\nTraining XGBoost model to predict next {TARGET_GAMEWEEKS} gameweek(s).
 USE_HYPERPARAMETER_TUNING = True  # Set to False for faster training
 
 if USE_HYPERPARAMETER_TUNING:
-    print("Using hyperparameter tuning with validation set...")
-    model, best_params = tune_xgboost_hyperparameters(X_train, y_train, X_val, y_val, n_iter=30)
+    print("Using enhanced hyperparameter tuning with multiple objectives...")
+    model, best_params, best_objective, all_results = tune_xgboost_with_objectives(
+        X_train, y_train, X_val, y_val, 
+        objectives_to_try=['auto'],  # Will auto-detect + try alternatives
+        n_iter=30
+    )
+    print(f"\n🏆 Selected model: {best_objective.upper()} objective")
 else:
-    # Option 2: Use default parameters (faster)
-    print("Using default parameters...")
-    xgb_params = {
-        'objective': 'reg:squarederror',
-        'max_depth': 8,
-        'learning_rate': 0.05,
-        'n_estimators': 300,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'reg_alpha': 0.1,
-        'reg_lambda': 1.0,
-        'random_state': 42,
-        'n_jobs': -1
-    }
+    # Option 2: Use recommended objective based on distribution
+    print("Using recommended objective based on distribution analysis...")
+    recommended_params, obj_type = get_objective_params(recommended_objective)
     
-    model = xgb.XGBRegressor(**xgb_params)
-    model.fit(X_train, y_train)
+    model = xgb.XGBRegressor(**recommended_params)
+    
+    # Handle gamma objective if needed
+    y_train_adj = y_train.copy()
+    if obj_type == 'gamma':
+        y_train_adj = np.maximum(y_train_adj, 0.1)
+    
+    model.fit(X_train, y_train_adj)
+    best_objective = obj_type
+    print(f"🎯 Using {best_objective.upper()} objective")
 
 # Make predictions on all sets
 y_train_pred = model.predict(X_train)
@@ -783,8 +992,9 @@ else:
 print("\n" + "="*60)
 print("MODEL SUMMARY")
 print("="*60)
-print(f"Model: XGBoost Regressor (Future Points Prediction)")
+print(f"Model: XGBoost Regressor ({best_objective.upper()} objective)")
 print(f"Target: Next {TARGET_GAMEWEEKS} gameweek(s) average points")
+print(f"Objective: {best_objective} (auto-selected based on distribution)")
 print(f"Features: {len(available_features)}")
 print(f"Training samples: {len(X_train):,}")
 print(f"Validation samples: {len(X_val):,}")
@@ -792,13 +1002,23 @@ print(f"Test samples: {len(X_test):,}")
 print(f"Validation RMSE: {val_rmse:.4f}")
 print(f"Validation MAE: {val_mae:.4f}")
 print(f"Validation R²: {val_r2:.4f}")
+print(f"Validation Spearman ρ: {val_spearman:.4f}")
+print(f"Validation Spearman R²: {val_spearman_r2:.4f}")
 print(f"Test RMSE: {test_rmse:.4f}")
 print(f"Test MAE: {test_mae:.4f}")
 print(f"Test R²: {test_r2:.4f}")
+print(f"Test Spearman ρ: {test_spearman:.4f}")
+print(f"Test Spearman R²: {test_spearman_r2:.4f}")
 
-# Save the model
-model.save_model(f'fantasy_football_future_xgb_gw{TARGET_GAMEWEEKS}.json')
-print(f"\nModel saved as 'fantasy_football_future_xgb_gw{TARGET_GAMEWEEKS}.json'")
+# Save the model with objective info
+model.save_model(f'fantasy_football_future_xgb_gw{TARGET_GAMEWEEKS}_{best_objective}.json')
+print(f"\nModel saved as 'fantasy_football_future_xgb_gw{TARGET_GAMEWEEKS}_{best_objective}.json'")
 
-print(f"\nNote: Change TARGET_GAMEWEEKS to 4 to predict average of next 4 gameweeks")
+print(f"\n📊 DISTRIBUTION INSIGHTS:")
+print(f"Target skewness: {distribution_analysis['skewness']:.3f}")
+print(f"Zero values: {distribution_analysis['zero_percent']:.1f}%")
+print(f"Recommended approach: {distribution_analysis['recommendation'].upper()}")
+
+print(f"\nNote: Change TARGET_GAMEWEEKS to different values to predict different horizons")
 print(f"Current setting: Predicting next {TARGET_GAMEWEEKS} gameweek(s)")
+#%%
