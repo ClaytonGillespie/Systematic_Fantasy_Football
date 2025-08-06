@@ -85,13 +85,13 @@ def main():
         # Final prediction
         predicted_4gw = base_4gw_prediction * cost_multiplier * position_multiplier
         
-        # Apply reasonable bounds as requested (negative to 30)
-        predicted_4gw = np.clip(predicted_4gw, -2.0, 30.0)
+        # Apply reasonable bounds (negative to 100 over 4 gameweeks)
+        predicted_4gw = np.clip(predicted_4gw, -2.0, 100.0)
         
         # Add some controlled randomness to avoid identical predictions
         noise = np.random.normal(0, 0.1)
         predicted_4gw += noise
-        predicted_4gw = np.clip(predicted_4gw, -2.0, 30.0)
+        predicted_4gw = np.clip(predicted_4gw, -2.0, 100.0)
         
         # Map position names to numbers for optimizer
         position_to_num = {
