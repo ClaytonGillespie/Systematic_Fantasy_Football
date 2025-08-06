@@ -64,3 +64,4 @@ tzdata==2025.2
 urllib3==2.5.0
 wcwidth==0.2.13
 xgboost==3.0.3
+beautifulsoup4==4.12.3
