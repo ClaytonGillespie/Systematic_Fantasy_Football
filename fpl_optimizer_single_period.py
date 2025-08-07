@@ -14,7 +14,9 @@ from datetime import datetime
 import glob
 import os
 
-def load_latest_predictions():
+injuries_and_transfers = ['Wissa','Mbeumo','Son','Santos Carneiro da Cunha','Alese']
+
+def load_latest_predictions(injuries_and_transfers):
     """Load the latest prediction file from data_2025/predictions/"""
     
     # Find the latest prediction file
@@ -34,6 +36,9 @@ def load_latest_predictions():
     # Clean and prepare the data
     players_df = players_df.dropna(subset=['predicted_4gw', 'cost_million', 'position_name'])
     
+    # Remove injuries and transfers
+    players_df = players_df[~players_df['second_name'].isin(injuries_and_transfers)]
+
     # Map position names to numbers for constraints
     position_mapping = {
         'Goalkeeper': 1,
@@ -321,7 +326,7 @@ def main():
     
     try:
         # Load predictions
-        players_df = load_latest_predictions()
+        players_df = load_latest_predictions(injuries_and_transfers)
         
         # Run single period optimization
         solution = optimize_single_period_fpl(

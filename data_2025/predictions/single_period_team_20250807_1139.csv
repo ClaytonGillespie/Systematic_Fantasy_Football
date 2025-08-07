@@ -1,16 +1,16 @@
 player_name,team_short,position_name,element_type,cost_million,predicted_4gw,predicted_ppg,is_starting,is_captain,role,optimization_type
 Mohamed Salah,LIV,Midfielder,3,14.5,55.23974726462873,13.809936816157183,True,True,Captain,single_period_gw1_4
 Cole Palmer,CHE,Midfielder,3,10.5,29.8381855026439,7.459546375660975,True,False,Starter,single_period_gw1_4
-Bryan Mbeumo,MUN,Midfielder,3,8.0,29.8154588108675,7.453864702716875,True,False,Starter,single_period_gw1_4
 Chris Wood,NFO,Forward,4,7.5,24.857253201238613,6.214313300309653,True,False,Starter,single_period_gw1_4
 Jarrod Bowen,WHU,Forward,4,8.0,24.25096246306462,6.062740615766155,True,False,Starter,single_period_gw1_4
-Yoane Wissa,BRE,Forward,4,7.5,23.035035697124343,5.758758924281087,True,False,Starter,single_period_gw1_4
+Antoine Semenyo,BOU,Midfielder,3,7.0,20.157063774779584,5.039265943694896,True,False,Starter,single_period_gw1_4
 Jacob Murphy,NEW,Midfielder,3,6.5,18.554881367864105,4.6387203419660255,True,False,Starter,single_period_gw1_4
+Alex Iwobi,FUL,Midfielder,3,6.5,18.46111613605652,4.615279034014129,True,False,Starter,single_period_gw1_4
+Jordan Pickford,EVE,Goalkeeper,1,5.5,17.800925773904208,4.450231443476052,True,False,Starter,single_period_gw1_4
 Joško Gvardiol,MCI,Defender,2,6.0,17.78010182018414,4.445025455046035,True,False,Starter,single_period_gw1_4
-Matz Sels,NFO,Goalkeeper,1,5.0,16.640173404641114,4.160043351160279,True,False,Starter,single_period_gw1_4
+Virgil van Dijk,LIV,Defender,2,6.0,16.51712034906891,4.129280087267228,True,False,Starter,single_period_gw1_4
 Nikola Milenković,NFO,Defender,2,5.5,16.50275778629672,4.12568944657418,True,False,Starter,single_period_gw1_4
-Aaron Wan-Bissaka,WHU,Defender,2,4.5,12.645559467081002,3.1613898667702505,True,False,Starter,single_period_gw1_4
-Mike Trésor Ndayishimiye,BUR,Midfielder,3,4.5,7.462915455694966,1.8657288639237417,False,False,Bench,single_period_gw1_4
-Freddie Woodman,LIV,Goalkeeper,1,4.0,6.294259363275684,1.573564840818921,False,False,Bench,single_period_gw1_4
-Maxime Estève,BUR,Defender,2,4.0,6.235364143121739,1.5588410357804348,False,False,Bench,single_period_gw1_4
-Quilindschy Hartman,BUR,Defender,2,4.0,5.933713971450034,1.4834284928625086,False,False,Bench,single_period_gw1_4
+Luís Hemir Silva Semedo,SUN,Forward,4,4.5,7.432800380707067,1.8582000951767668,False,False,Bench,single_period_gw1_4
+Simon Moore,SUN,Goalkeeper,1,4.0,6.528356093353929,1.6320890233384822,False,False,Bench,single_period_gw1_4
+Oliver Sonne,BUR,Defender,2,4.0,6.468989651447546,1.6172474128618866,False,False,Bench,single_period_gw1_4
+Rhys Williams,LIV,Defender,2,4.0,0.0912632411699935,0.0228158102924983,False,False,Bench,single_period_gw1_4
