@@ -219,9 +219,9 @@ def create_enhanced_features(historical_df, future_fixtures_df, target_gameweeks
     enhanced_df['day_of_week'] = enhanced_df['kickoff_time'].dt.dayofweek
     enhanced_df['month'] = enhanced_df['kickoff_time'].dt.month
     
-    # Convert boolean to int
+    # Convert boolean to int (handle NaN values)
     enhanced_df['was_home'] = enhanced_df['was_home'].astype(int)
-    enhanced_df['modified'] = enhanced_df['modified'].astype(int)
+    enhanced_df['modified'] = enhanced_df['modified'].fillna(0).astype(int)
     
     # Create rolling averages (last 3 games performance within season)
     enhanced_df = enhanced_df.sort_values(['season', 'element', 'round'])
@@ -357,30 +357,39 @@ print(f"Validation: {len(X_val)} samples")
 print(f"Testing: {len(X_test)} samples")
 
 #%%
-# Import and use the distribution analysis function
-from distribution_check import analyze_points_distribution
-
-# Analyze target distribution first
+# Simple target distribution analysis (without problematic log transformation)
 print("\nAnalyzing target distribution to choose optimal objective...")
 
-# Create a temporary DataFrame for the analysis
-temp_df = pd.DataFrame({'future_points': y})
-distribution_analysis = analyze_points_distribution(temp_df, 'future_points')
+# Basic stats without log transformation
+import scipy.stats as stats
+skewness = stats.skew(y.dropna())
+zero_or_negative = (y <= 0).sum()
+zero_percent = zero_or_negative / len(y) * 100
 
-# Extract recommendation (the function returns a dict, so we need to add this)
-skewness = distribution_analysis['skewness']
-zero_percent = (y == 0).mean() * 100
+print(f"Target variable stats:")
+print(f"  Mean: {y.mean():.3f}")
+print(f"  Std: {y.std():.3f}")
+print(f"  Skewness: {skewness:.3f}")
+print(f"  Zero or negative points: {zero_or_negative} ({zero_percent:.1f}%)")
 
+# Determine recommended objective
 if zero_percent > 15:
     recommended_objective = 'tweedie'
 elif skewness > 2.0:
-    recommended_objective = 'gamma'
+    recommended_objective = 'tweedie'  # Changed from gamma due to zero handling
 elif skewness > 1.0:
     recommended_objective = 'tweedie'
 else:
     recommended_objective = 'standard'
 
 print(f"Recommended objective: {recommended_objective}")
+
+# Create distribution analysis dict for compatibility
+distribution_analysis = {
+    'skewness': skewness,
+    'zero_percent': zero_percent,
+    'recommendation': recommended_objective
+}
 
 #%%
 # Get objective-specific parameters
@@ -422,209 +431,175 @@ def get_objective_params(objective_type, base_params=None):
     return params, objective_type
 
 #%%
-# Enhanced hyperparameter tuning with multiple objectives
-def tune_xgboost_with_objectives(X_train, y_train, X_val, y_val, objectives_to_try=['auto'], n_iter=30):
+# Optuna hyperparameter optimization for Tweedie vs Standard
+import optuna
+
+def tune_xgboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=100):
     """
-    Tune XGBoost hyperparameters across different objectives
+    Use Optuna to optimize XGBoost hyperparameters comparing Tweedie vs Standard objectives
+    with early stopping, higher learning rates, and more estimators
     """
-    if 'auto' in objectives_to_try:
-        # Use distribution analysis recommendation
-        temp_train_df = pd.DataFrame({'future_points': y_train})
-        dist_analysis = analyze_points_distribution(temp_train_df, 'future_points')
+    
+    def objective(trial):
+        # Choose between tweedie and standard objectives
+        obj_type = trial.suggest_categorical('objective_type', ['standard', 'tweedie'])
         
-        # Extract recommendation
-        skewness = dist_analysis['skewness']
-        zero_percent = (y_train == 0).mean() * 100
-        
-        if zero_percent > 15:
-            auto_objective = 'tweedie'
-        elif skewness > 2.0:
-            auto_objective = 'gamma'
-        elif skewness > 1.0:
-            auto_objective = 'tweedie'
-        else:
-            auto_objective = 'standard'
-            
-        objectives_to_try = [auto_objective, 'standard', 'tweedie']  # Try recommended + alternatives
-    
-    best_overall_rmse = float('inf')
-    best_overall_model = None
-    best_overall_params = None
-    best_objective = None
-    
-    results_by_objective = {}
-    
-    print(f"\n🔬 TESTING MULTIPLE OBJECTIVES: {objectives_to_try}")
-    print("=" * 60)
-    
-    for obj_type in objectives_to_try:
-        print(f"\n🎯 Testing {obj_type.upper()} objective...")
-        
-        # Get base parameters for this objective
-        base_params, _ = get_objective_params(obj_type)
-        
-        # Parameter search space (objective-specific)
-        if obj_type == 'tweedie':
-            param_distributions = {
-                'max_depth': [4, 5, 6, 7, 8],
-                'learning_rate': [0.03, 0.05, 0.07, 0.1],
-                'n_estimators': [200, 300, 400],
-                'subsample': [0.7, 0.8, 0.9],
-                'colsample_bytree': [0.7, 0.8, 0.9],
-                'reg_alpha': [0.1, 0.5, 1.0],
-                'reg_lambda': [0.5, 1.0, 2.0],
-                'tweedie_variance_power': [1.2, 1.5, 1.8]
-            }
-        else:
-            param_distributions = {
-                'max_depth': [4, 5, 6, 7, 8],
-                'learning_rate': [0.05, 0.1, 0.15],
-                'n_estimators': [200, 300, 400],
-                'subsample': [0.7, 0.8, 0.9],
-                'colsample_bytree': [0.7, 0.8, 0.9],
-                'reg_alpha': [0, 0.1, 0.5],
-                'reg_lambda': [0.5, 1.0, 2.0]
-            }
-        
-        best_rmse = float('inf')
-        best_params = None
-        best_model = None
-        
-        # Random search for this objective
-        np.random.seed(42)
-        for i in range(n_iter):
-            # Sample random parameters
-            params = base_params.copy()
-            
-            for param, values in param_distributions.items():
-                params[param] = np.random.choice(values)
-            
-            try:
-                # Handle gamma objective requirement (no zeros/negatives)
-                y_train_adjusted = y_train.copy()
-                y_val_adjusted = y_val.copy()
-                
-                if obj_type == 'gamma':
-                    # Add small constant to handle zeros for gamma
-                    y_train_adjusted = np.maximum(y_train_adjusted, 0.1)
-                    y_val_adjusted = np.maximum(y_val_adjusted, 0.1)
-                
-                # Train model
-                model = xgb.XGBRegressor(**params)
-                model.fit(X_train, y_train_adjusted)
-                
-                # Predict and adjust back if needed
-                y_val_pred = model.predict(X_val)
-                
-                if obj_type == 'gamma':
-                    # No adjustment needed for gamma predictions
-                    pass
-                
-                # Calculate validation RMSE on original scale
-                val_rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
-                
-                # Track best for this objective
-                if val_rmse < best_rmse:
-                    best_rmse = val_rmse
-                    best_params = params.copy()
-                    best_model = model
-                
-            except Exception as e:
-                continue
-            
-            if (i + 1) % 10 == 0:
-                print(f"   Iteration {i + 1}/{n_iter}, Best RMSE: {best_rmse:.4f}")
-        
-        # Store results for this objective
-        if best_model is not None:
-            results_by_objective[obj_type] = {
-                'model': best_model,
-                'params': best_params,
-                'rmse': best_rmse
-            }
-            
-            print(f"   ✅ Best {obj_type} RMSE: {best_rmse:.4f}")
-            
-            # Track overall best
-            if best_rmse < best_overall_rmse:
-                best_overall_rmse = best_rmse
-                best_overall_model = best_model
-                best_overall_params = best_params
-                best_objective = obj_type
-        else:
-            print(f"   ❌ No valid model found for {obj_type}")
-    
-    # Summary
-    print(f"\n🏆 OBJECTIVE COMPARISON:")
-    print("-" * 40)
-    for obj_type, result in results_by_objective.items():
-        indicator = "🏆" if obj_type == best_objective else "  "
-        print(f"{indicator} {obj_type:10}: RMSE {result['rmse']:.4f}")
-    
-    print(f"\n🎯 Best objective: {best_objective.upper()}")
-    print(f"📈 Best validation RMSE: {best_overall_rmse:.4f}")
-    
-    return best_overall_model, best_overall_params, best_objective, results_by_objective
-def tune_xgboost_hyperparameters(X_train, y_train, X_val, y_val, n_iter=50):
-    """
-    Tune XGBoost hyperparameters using validation set
-    """
-    # Define parameter search space
-    param_distributions = {
-        'max_depth': [3, 4, 5, 6, 7, 8, 9],
-        'learning_rate': [0.01, 0.05, 0.1, 0.15, 0.2],
-        'n_estimators': [100, 200, 300, 500],
-        'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-        'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-        'reg_alpha': [0, 0.1, 0.5, 1.0],
-        'reg_lambda': [0.1, 0.5, 1.0, 2.0],
-        'min_child_weight': [1, 3, 5, 7]
-    }
-    
-    best_rmse = float('inf')
-    best_params = None
-    best_model = None
-    
-    print(f"Starting hyperparameter tuning with {n_iter} iterations...")
-    
-    # Random search
-    np.random.seed(42)
-    for i in range(n_iter):
-        # Sample random parameters
+        # Base hyperparameters with wider ranges
         params = {
-            'objective': 'reg:squarederror',
+            'max_depth': trial.suggest_int('max_depth', 4, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),  # Higher max LR
+            'n_estimators': trial.suggest_int('n_estimators', 500, 2000),  # Much higher max estimators
+            'subsample': trial.suggest_float('subsample', 0.6, 0.95),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 0.95),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 2.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.1, 3.0),
             'random_state': 42,
-            'n_jobs': -1
+            'n_jobs': -1,
+            'early_stopping_rounds': 150,  # Early stopping
+            'eval_metric': 'rmse'
         }
         
-        for param, values in param_distributions.items():
-            params[param] = np.random.choice(values)
+        # Objective-specific parameters
+        if obj_type == 'tweedie':
+            params.update({
+                'objective': 'reg:tweedie',
+                'tweedie_variance_power': trial.suggest_float('tweedie_variance_power', 1.1, 1.9)
+            })
+        else:  # standard
+            params['objective'] = 'reg:squarederror'
         
-        # Train model with current parameters
-        model = xgb.XGBRegressor(**params)
-        model.fit(X_train, y_train)
-        
-        # Evaluate on validation set
-        y_val_pred = model.predict(X_val)
-        val_rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
-        
-        # Track best model
-        if val_rmse < best_rmse:
-            best_rmse = val_rmse
-            best_params = params.copy()
-            best_model = model
-        
-        if (i + 1) % 10 == 0:
-            print(f"Iteration {i + 1}/{n_iter}, Best validation RMSE: {best_rmse:.4f}")
+        try:
+            # Handle negative values (but keep zeros for Tweedie)
+            y_train_adj = y_train.copy()
+            y_val_adj = y_val.copy()
+            
+            if obj_type == 'tweedie':
+                # Tweedie handles zeros naturally, just fix any negative values
+                y_train_adj = np.maximum(y_train_adj, 0.0)
+                y_val_adj = np.maximum(y_val_adj, 0.0)
+                       
+            model = xgb.XGBRegressor(**params)
+            
+            # Train with early stopping using validation set
+            model.fit(
+                X_train, y_train_adj,
+                eval_set=[(X_val, y_val_adj)],
+                verbose=False
+            )
+            
+            # Predict on validation set
+            y_val_pred = model.predict(X_val)
+            
+            # Calculate validation RMSE on top 200 scores only
+            # Get indices of top 200 actual scores
+            top_200_indices = np.argsort(y_val)[-200:]
+            
+            if len(top_200_indices) > 0:
+                y_val_top200 = y_val.iloc[top_200_indices]
+                y_val_pred_top200 = y_val_pred[top_200_indices]
+                val_rmse = np.sqrt(mean_squared_error(y_val_top200, y_val_pred_top200))
+            else:
+                # Fallback to all data if less than 200 samples
+                val_rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
+            
+            return val_rmse
+            
+        except Exception as e:
+            # Return a high value for failed trials
+            return float('inf')
     
-    print(f"\nBest parameters found:")
+    print(f"\n🔬 OPTUNA OPTIMIZATION: Tweedie vs Standard (with Early Stopping)")
+    print("=" * 70)
+    print(f"Running {n_trials} trials with:")
+    print("  • Learning rates: 0.01 - 0.3")
+    print("  • Estimators: 500 - 2000") 
+    print("  • Early stopping: 50 rounds")
+    
+    # Create study with pruning for efficiency
+    study = optuna.create_study(
+        direction='minimize', 
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=20)
+    )
+    
+    # Optimize
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    
+    # Get best results
+    best_trial = study.best_trial
+    best_params = best_trial.params.copy()
+    
+    # Extract objective type and remove from params
+    best_objective = best_params.pop('objective_type')
+    
+    # Reconstruct full parameters for final model
+    final_params = {
+        'max_depth': best_params['max_depth'],
+        'learning_rate': best_params['learning_rate'],
+        'n_estimators': best_params['n_estimators'],
+        'subsample': best_params['subsample'],
+        'colsample_bytree': best_params['colsample_bytree'],
+        'reg_alpha': best_params['reg_alpha'],
+        'reg_lambda': best_params['reg_lambda'],
+        'early_stopping_rounds': 150,  # Early stopping
+        'random_state': 42,
+        'n_jobs': -1
+    }
+    
+    if best_objective == 'tweedie':
+        final_params.update({
+            'objective': 'reg:tweedie',
+            'tweedie_variance_power': best_params['tweedie_variance_power']
+        })
+    else:
+        final_params['objective'] = 'reg:squarederror'
+    
+    # Train final model with best parameters and early stopping
+    # Handle negative values (but keep zeros for Tweedie)
+    y_train_final = y_train.copy()
+    y_val_final = y_val.copy()
+    
+    if best_objective == 'tweedie':
+        y_train_final = np.maximum(y_train_final, 0.0)
+        y_val_final = np.maximum(y_val_final, 0.0)
+    
+    best_model = xgb.XGBRegressor(**final_params)
+    best_model.fit(
+        X_train, y_train_final,
+        eval_set=[(X_val, y_val_final)],
+        verbose=False
+    )
+    
+    # Print results
+    print(f"\n🏆 OPTUNA RESULTS:")
+    print("-" * 50)
+    print(f"🎯 Best objective: {best_objective.upper()}")
+    print(f"📈 Best validation RMSE: {best_trial.value:.4f}")
+    print(f"🌳 Best n_estimators used: {best_model.best_iteration}")
+    print(f"🔧 Best parameters:")
     for param, value in best_params.items():
-        if param not in ['objective', 'random_state', 'n_jobs']:
-            print(f"  {param}: {value}")
+        if param != 'objective_type':
+            if isinstance(value, float):
+                print(f"   {param}: {value:.4f}")
+            else:
+                print(f"   {param}: {value}")
     
-    print(f"Best validation RMSE: {best_rmse:.4f}")
+    # Print objective breakdown
+    tweedie_trials = [t for t in study.trials if t.params.get('objective_type') == 'tweedie' and t.state == optuna.trial.TrialState.COMPLETE]
+    standard_trials = [t for t in study.trials if t.params.get('objective_type') == 'standard' and t.state == optuna.trial.TrialState.COMPLETE]
     
-    return best_model, best_params
+    print(f"\n📊 Objective Comparison:")
+    if tweedie_trials:
+        best_tweedie_rmse = min(t.value for t in tweedie_trials)
+        tweedie_count = len(tweedie_trials)
+        print(f"   Tweedie:  {best_tweedie_rmse:.4f} (best of {tweedie_count} trials)")
+    
+    if standard_trials:
+        best_standard_rmse = min(t.value for t in standard_trials)
+        standard_count = len(standard_trials)
+        print(f"   Standard: {best_standard_rmse:.4f} (best of {standard_count} trials)")
+    
+    return best_model, final_params, best_objective, study
+
 
 # Train XGBoost model
 print(f"\nTraining XGBoost model to predict next {TARGET_GAMEWEEKS} gameweek(s)...")
@@ -633,11 +608,10 @@ print(f"\nTraining XGBoost model to predict next {TARGET_GAMEWEEKS} gameweek(s).
 USE_HYPERPARAMETER_TUNING = True  # Set to False for faster training
 
 if USE_HYPERPARAMETER_TUNING:
-    print("Using enhanced hyperparameter tuning with multiple objectives...")
-    model, best_params, best_objective, all_results = tune_xgboost_with_objectives(
+    print("Using Optuna hyperparameter tuning with Tweedie vs Standard objectives...")
+    model, best_params, best_objective, study = tune_xgboost_with_optuna(
         X_train, y_train, X_val, y_val, 
-        objectives_to_try=['auto'],  # Will auto-detect + try alternatives
-        n_iter=30
+        n_trials=100  # Increased trials for better optimization
     )
     print(f"\n🏆 Selected model: {best_objective.upper()} objective")
 else:
@@ -933,10 +907,11 @@ def analyze_r2_by_target_gameweeks(historical_df, future_fixtures_df, elements_d
     return results_df
 
 # Run the R² analysis
-r2_analysis_df = analyze_r2_by_target_gameweeks(historical_df, future_fixtures_df, elements_df, max_gameweeks=6)
+run_gw_analysis = False
+if run_gw_analysis:
+    r2_analysis_df = analyze_r2_by_target_gameweeks(historical_df, future_fixtures_df, elements_df, max_gameweeks=6)
 
-# Display and save R² analysis results
-if len(r2_analysis_df) > 0:
+    # Display and save R² analysis results
     print("\n" + "="*80)
     print("R² ANALYSIS BY TARGET GAMEWEEKS")
     print("="*80)
@@ -985,7 +960,7 @@ if len(r2_analysis_df) > 0:
     print(f"- r2_analysis_df: {r2_analysis_df.shape}")
     
 else:
-    print("No R² analysis results generated - check data availability")
+    print("No R² analysis results generated")
 
 #%%
 # Model summary
